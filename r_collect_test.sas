@@ -4,7 +4,7 @@
 | APPLICATION:| REPLENISHMENT                                                                                          |
 | OS:         | Windows, Unix                                                                                          |
 +----------------------------------------------------------------------------------------------------------------------+
-| DESCRIPTION:  													                                                   |
+| DESCRIPTION: testing version												                                           |
 +----------------------------------------------------------------------------------------------------------------------+
 | SAS VERSION: SAS 9.3                                                                                                 |
 +----------------------------------------------------------------------------------------------------------------------+
@@ -12,7 +12,7 @@
 -----------------------------------------------------------------------------------------------------------------------+
 */
 
-%macro r_collect / store secure;
+%macro r_collect / store secure minoperator;
 
 /*opening the log file*/
 /**************************************************/
@@ -20,33 +20,34 @@ proc printto log="C:\Users\Slava\Documents\My_Logs\r_collect_&bu..log" new;
 run;
 /****************************************************/
 
-%local repl_holdouts         /* archived holdouts to be used in calculating safety stock */
-	   archive_list          /* the list of time data points driven from macro 'relp_holdout' for which data (output ot final output) exists */
-	   bound                 /* macro used in the condition of the while loop based on the sign (+/-) of step*/
-	   to                    /* variable used in macro _cmap_ */
-	   return                /* this macro has value 1 if the data (output or final output) was not uncompressed; it has value 0, otherwise */
-	   num                   /* # of elements in archive_list */
-	   w_step
-	   w_end
-	   w
+%local repl_holdouts         /*archived holdouts to be used in calculating safety stock*/
+	   archive_list          /*the list of time data points driven from macro 'relp_holdout' for which data (output ot final output) exists*/
+	   bound                 /*macro used in the condition of the while loop based on the sign (+/-) of step*/
+	   to                    /*variable used in macro _cmap_*/
+	   return                /*this macro has value 1 if the data (output or final output) was not uncompressed; it has value 0, otherwise*/
+	   num                   /*# of elements in archive_list*/
+       total_win             /*union of win_num's*/
+	   i					 /*counter*/
+	   win_last              /*last fiscal date in forecast window 'win_num', determined by 'lag'*/
+	   forecast_last         /*last available fiscal date for a given forecast*/
+	   sales_last            /*last available fiscal date from 'input.f_b&bu._sales'*/
+	   missing_list          /*missing fiscal dates from total_win*/
        ;
 
-/*assigning value to macro variable repl_holdouts*/
-/****************************************************/
-libname repl_tab "C:\Users\Slava\Documents\Replaneshment_Peter\Replenishment_Tables";
-data _null_;
-	 set repl_tab.io_user_bu_params(keep= name default
-							       where=(name="repl_holdouts")
-							        )
-	 ;
-	 call symput("repl_holdouts", default);
-run;
-/****************************************************/
 
 %_global_params_(master_job_name=FORECAST, log_file_name=C:\Users\Slava\Documents\My_Logs\r_collect_&bu..log); 
-run; 
+run;
 
-/* asigning values to macro variables 'bound' and 'to' */
+/*macro variables that are needed*/
+/*************************************/
+%let repl_holdouts=200901 200902 1;
+%let t_review = 1;
+%let t_lead = 1;
+%let t_sales= 1;
+%let agg_lvl = %_remove_(sentence=&f_geo_level &f_prod_level, remove_list=upc, modifier=e);
+/*************************************/
+
+/*asigning values to macro variables 'bound' and 'to'*/
 /*******************************************************/
 %if %scan(&repl_holdouts,3,' ') > 0 %then %do;
     %let bound= <= %scan(&repl_holdouts,2,' ');
@@ -63,25 +64,29 @@ run;
 /*********************************************************************************************************************************************/
 %do %while(&to &bound);
 
-    /*uncompressing 'xxxx_final_output'*/
+	/*uncompressing 'xxxx_final_output'*/
     /**********************************************************************************************************************************/
     %_uncompress_(file_path=&archive_path&bu&separater.forecast&separater&to&separater.output&separater.f_b&bu._final_output.sas7bdat,
                   mvar=return
                   );
     run;
-	
 	/**********************************************************************************************************************************/
 
 	/*if uncompressing was sucsessful*/
     /****************************************************************************************************************************/
     %if &return=0 %then %do;
 	  
-	    /*updating value of macro variable 'archive_list' and assigning value to macro variable 'input_&num'*/
+	    /*1.updating value of macro variable 'archive_list'*/
+        /*2.assigning value to macro variables 'input_&num' and '_&to'*/
+		/*3.assigning libname*/
 	    /************************************************************************************************************************/
         %let archive_list=&archive_list &to;
-		%let num = %_countw_(sentence=&archive_list);
-		%local input_&num; 
-        %let input_&num=&archive_path&bu&separater.forecast&separater&to&separater.output&separater.f_b&bu._final_output.sas7bdat; 
+        %let num = %_countw_(sentence=&archive_list);
+		%local input_&num 
+               _&to
+        ;
+	    libname _&to "&archive_path&bu&separater.forecast&separater&to&separater.output&separater.";
+        %let input_&num=_&&to..f_b&bu._final_output; 
         /************************************************************************************************************************/
 
 	%end;
@@ -103,47 +108,74 @@ run;
 		/****************************************************************************************************************************/
         %if &return=0 %then %do;
 
-			/*updating value of macro variable 'archive_list' and assigning value to macro variable 'input_&num'*/
-			/********************************************************************************************************************/
+			/*1.updating value of macro variable 'archive_list'*/
+            /*2.assigning value to macro variables 'input_&num' and '_&to'*/
+		    /*3.assigning libname*/
+			/********************************************************************************************/
             %let archive_list=&archive_list &to;
             %let num = %_countw_(sentence=&archive_list);
-		    %local input_&num;
-            %let input_&num=&archive_path&bu&separater.forecast&separater&to&separater.output&separater.f_b&bu._output.sas7bdat; 
-            /********************************************************************************************************************/
+		    %local input_&num 
+                   _&to
+            ;
+	        libname _&to "&archive_path&bu&separater.forecast&separater&to&separater.output&separater.";
+            %let input_&num=_&&to..f_b&bu._output; 
+            /********************************************************************************************/
 
 		%end;
 		/****************************************************************************************************************************/
 
 	%end;
 	/************************************************************************************************************************************/
-	
-	/*assigning value to w_step and creating variable w_end*/
-	/**********************************************************************/
-	%let w_step = %eval(&t_review + &t_lead + &t_sales - 1);
-	
-	%_cmap_(from=fiscal, 
-            to=fiscal, 
-            start=%scan(&archive_list,%_countw_(sentence=&archive_list)), 
-            step=&w_step, 
-            mvar=w_end
-            );
-    run;
-    /**********************************************************************/
 
-	/*loading hash object and updating variable w */
-	/************************************************************************************************************************/
-	%_list_(from=%scan(&archive_list,%_countw_(sentence=&archive_list)), to=&w_end, step=,order=a, type=fiscal, mvar=list);
-	run;  
+	%if &return=0 %then %do;
 
-	if _n_ = 1 then do;
-		declare hash w_&num(dataset:"&&input_&num");
-		w_&num..definekey(%_comma_sep_(&f_geo_level &f_prod_level, quoted=1));
-		w_&num..definedata(%_comma_sep_(&list, quoted=1));
-		w_&num..definedone();
-	end;
+	    /*assigning value to variable win_&num*/
+	    /*****************************************************/
+        %local win_&num;
+        %_list_(from=&to, 
+                to=, 
+                step=%eval(&t_review + &t_lead + &t_sales - 1),
+                order=a, 
+                type=fiscal, 
+                mvar=win_&num
+                );
+        run; 
+	    /*****************************************************/ 
+		
+		/*1.assigning value to variables win_last, forecast_last*/
+	    /*2.adjusting the value of 'win_&num' if needed*/
+	    /*********************************************************************************************************/
+		%let win_last = %scan(&&win_&num,-1);
+		%let forecast_last = %scan(%_vars_list_(data=&&input_&num,keep=_:,drop=),-1,'_');
+		
+		%if (&win_last > &forecast_last) %then %do;
 
-	%let w = &w &list;
-	/************************************************************************************************************************/
+			%_list_(from= &to,
+        			to=&forecast_last, 
+        			step=,
+        			order=a, 
+        			type=fiscal, 
+        			mvar=win_&num
+        			);
+			run;   
+
+			%_log_message_(text=PROGNOSWARNING: FISCALS AFTER %scan(&&win_&num,%_countw_(sentence=&&win_&num)));
+    		%_log_message_(text=PROGNOSWARNING: ARE MISSING.);
+    		%_log_message_(text=PROGNOSWARNING: THIS WARNING WAS ISSUED BY MACRO R_COLLECT.);
+
+		%end;
+	    /*********************************************************************************************************/
+
+		/*assigning value to variable 'total_win'*/
+		/********************************************/
+    	%let total_win=%_combine_(list1=&total_win, 
+                              	  list2=&&win_&num,
+		            		  	  delimiter=%str( )
+                                  );
+		/********************************************/
+
+	%end;
+	/*******************************************************************************************************************************************************************************************************/
 
 	/*updating variable &to for the while loop*/
 	/*********************************************/
@@ -160,6 +192,29 @@ run;
 /*********************************************************************************************************************************************/
 /*********************************************************************************************************************************************/
 
+/*checking wheather sales data is missing some columns*/
+/*assigning value to variable missing_list*/
+/***********************************************************************************************************/
+%do i = 1 %to %_countw_(sentence=&total_win);
+	%if not( %_format_list_(%scan(&total_win,&i), before=_) in %_vars_list_(data=input.f_b&bu._sales,keep=_:,drop=) ) %then %do;
+		%let missing_list = &missing_list %scan(&total_win,&i);
+	%end; 
+%end;
+/***********************************************************************************************************/
+
+/*if sales data is missing some columns, then shut down sas*/
+/********************************************************************************************/
+%if %length(&missing_list) > 0 %then %do;
+    %_log_message_(text=PROGNOSERROR: SOME COLUMNS FROM %upcase(input.f_b&bu._sales) ARE MISSING);
+    %_log_message_(text=PROGNOSERROR: THIS ERROR MESSAGE WAS ISSUED BY MACRO R_COLLECT.);
+
+	proc printto;
+	run;
+    %_update_status_(log_file_name=r_collect_&bu);
+    %_abort_(rc=2);
+%end;
+/********************************************************************************************/
+
 /*if none of the 'xxxx_final_output' or 'xxxx_output' from the archive were uncompressed*/
 /********************************************************************************************/
 %if %length(&archive_list)=0 %then %do;
@@ -174,64 +229,140 @@ run;
 %end;
 /********************************************************************************************/
 
+/*creating dataset with actuals, forecast and error*/
+/**********************************************************************************************/
+data _null_;
+
+/*setting up PDV*/
+/********************************************************************************************************/
+if 0 then set input.f_b&bu._sales(keep=&f_geo_level &f_prod_level %_format_list_(&total_win, before=_));
+attrib %_format_list_(&archive_list, before=a_)
+       %_format_list_(&archive_list, before=f_)
+       %_format_list_(&archive_list, before=e_) 
+       %_format_list_(&archive_list, before=p_e_)
+       %_format_list_(&archive_list, before=n_e_)
+       %_format_list_(&archive_list, before=n_p_e_) length=&length_xxxxxx
+;
+flag=0;/*??*/
+/*rc */
+/********************************************************************************************************/
+
+/*setting up arrays*/
+/******************************************************/
+%do i=1 %to %_countw_(sentence=&archive_list);
+    array win&i{*} %_format_list_(&&win_&i, before=_);
+%end;
+array f_win{*} %_format_list_(&archive_list, before=f_); 
+array a_win{*} %_format_list_(&archive_list, before=a_);
+array e_win{*} %_format_list_(&archive_list, before=e_);
+array p_e{*}   %_format_list_(&archive_list, before=p_e_);
+array n_e{*}   %_format_list_(&archive_list, before=n_e_);
+array n_p_e{*} %_format_list_(&archive_list, before=n_p_e_); 
+/*******************************************************/
+
+/*loading hash objects*/
+/*****************************************************************************************/
+if _n_= 1 then do;
+
+	/*creating forecast hashes*/
+	/*********************************************************************************/
+	%do i = 1 %to %_countw_(sentence=&archive_list);
+
+		declare hash h_&i(dataset:"&&input_&i(where=(scan(type,2,' ')='forecast'))");
+		h_&i..definekey(%_comma_sep_(&f_geo_level &f_prod_level, quoted=1));
+		h_&i..definedata(%_comma_sep_(%_format_list_(&&win_&i, before=_), quoted=1));
+		h_&i..definedone();
+
+	%end;
+	/*********************************************************************************/
+
+	/*creating actuals-forecast-error hash*/
+	/**********************************************************************************/
+	declare hash h();
+	h.definekey(%_comma_sep_(&agg_lvl, quoted=1));
+	h.definedata(%_comma_sep_(%_format_list_(&archive_list, before=a_) 
+							  %_format_list_(&archive_list, before=f_) 
+							  %_format_list_(&archive_list, before=e_)
+                              %_format_list_(&archive_list, before=p_e_) 
+							  %_format_list_(&archive_list, before=n_e_) 
+							  %_format_list_(&archive_list, before=n_p_e_) , quoted=1)
+							  );
+	h.definedone();
+    declare hiter h_iter('h');
+	/**********************************************************************************/
+
+end;
+/*****************************************************************************************/
+
+/*******************************/
+set input.f_b&bu._sales end=last;
+/*******************************/
+
+rc=h.find();
+
+/*taking care of actuals*/
+/*********************************************/
+%do i=1 %to %_countw_(sentence=&archive_list);
+    a_win{&i}=sum(sum(of win&i{*}),a_win{&i});    
+%end;   
+/*********************************************/
+
+/*taking care of forecast*/
+/***********************************************/
+%do i = 1 %to %_countw_(sentence=&archive_list);
+    if h_&i..find()=0 then do;
+	   flag=flag+1;
+       f_win{&i}=sum(sum(of win&i{*}),f_win{&i});
+	end;
+%end;
+/***********************************************/
+
+/*outputing record to hash*/
+/***************************/
+if flag=0 then delete;
+if rc=0 then h.replace();
+else if rc^= 0 then h.add();
+/***************************/
+
+if last then do;
+
+   rc=h_iter.first();
+   do while(rc=0);  
+
+      /*computing errors*/
+      /**********************************************/
+      %do i = 1 %to %_countw_(sentence=&archive_list);
+          e_win{&i} = a_win{&i} - f_win{&i};
+      %end;
+      /**********************************************/
+
+      /*computing the rest of stat*/
+      /*********************************************************/
+      %do i = 1 %to %_countw_(sentence=&archive_list);
+          p_e{&i}=e_win{&i}/f_win{&i};
+          n_e{&i}=(e_win{&i}-mean(of e_win{*}))/std(of e_win{*});
+          n_p_e{&i}=(p_e{&i}-mean(of p_e{*}))/std(of p_e{*});
+      %end;
+      /*********************************************************/
+
+      rc = h.replace();
+      rc=h_iter.next();
+
+	end;
+   
+	h.output(dataset: "work.test_err");
+
+end;
+
+
+run;
+/**********************************************************************************************/
+
+
+
 
 proc printto;
 run;
+%return; 
 
-    
-%return;  
-/**********************************************************************************/
-
-
-
-/*time data point at which we calculate replenishment statistics*/
-/****************************************************************/
-%let rep_time=%scan(&repl_holdouts,1); /**?**/
-/****************************************************************/
-
-
-/*collecting data, calculating errors and normalizing them */
-/************************************************************************************************/
-data stat.r_b&bu._collect(keep=&sales_low_hierarchy
-                               error_: 
-                          );
-set input.f_b&bu._sales(keep=&sales_low_hierarchy/*we might change it*/ 
-                             _&rep_time
-					    rename=(_&rep_time=actual)
-                        );
-attrib %do i=1 %to %_countw_(sentence=&archive_list_refine);
-           error_&i
-       %end;
-	   length=8 /*hard coded*/+
-;
-array error{*} error_: ;
-if _n_=1 then do;
-   %do i=1 %to %_countw_(sentence=&archive_list_refine);
-       declare hash h&i("&&input&i(keep=&sales_low_hierarchy where=(scan(type,2)='forecast'))");
-       h&i..definekey();
-       h&i..definedata();
-       h&i..definedone(); 
-   %end;
-end;
-%do i=1 %to %_countw_(sentence=&archive_list_refine);
-    if h&i..find()=0 then error_&i=actual-&rep_time; 
-%end;
-
-/*normalizing*/
-/************************************************************/
-%do i=1 %to %_countw_(sentence=&archive_list_refine);
-    error_&i=(error_&i-mean(of error{*}))/std(of error{*}); 
-%end;
-/************************************************************/
-
-run;
-/************************************************************************************************/
-
-/*compressing data*/
-/*******************************************************************************************************/
-%do i=1 %to %_countw_(sentence=&archive_list_refine);
-    %_compress_(folder_path=&archive_path&bu&separater.forecast&separater%scan(&archive_list_refine,&i));
-%end;
-/*******************************************************************************************************/
-/*	%_compress_(folder_path=&&input_&num);*/
 %mend r_collect;
