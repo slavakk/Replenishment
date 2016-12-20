@@ -64,13 +64,13 @@ run;
 /*********************************************************************************************************************************************/
 %do %while(&to &bound);
 
-    /*uncompressing 'xxxx_final_output'*/
+	/*uncompressing 'xxxx_final_output'*/
     /**********************************************************************************************************************************/
     %_uncompress_(file_path=&archive_path&bu&separater.forecast&separater&to&separater.output&separater.f_b&bu._final_output.sas7bdat,
                   mvar=return
                   );
     run;
-    /**********************************************************************************************************************************/
+	/**********************************************************************************************************************************/
 
 	/*if uncompressing was sucsessful*/
     /****************************************************************************************************************************/
@@ -231,7 +231,7 @@ run;
 
 /*creating dataset with actuals, forecast and error*/
 /**********************************************************************************************/
-data _null_;
+data except.exceptions(keep=&f_geo_level &f_prod_level); /*change the name of data set?????*/
 
 /*setting up PDV*/
 /********************************************************************************************************/
@@ -241,24 +241,24 @@ attrib %_format_list_(&archive_list, before=a_)
        %_format_list_(&archive_list, before=e_) 
        %_format_list_(&archive_list, before=p_e_)
        %_format_list_(&archive_list, before=n_e_)
-       %_format_list_(&archive_list, before=n_p_e_) length=&length_xxxxxx
+       %_format_list_(&archive_list, before=n_p_e_)
+       m_e std_e m_p_e std_p_e rc                   length=&length_xxxxxx
 ;
-flag=0;/*??*/
-/*rc */
+flag=0;/*flag for determining which geo/prods we are using*/
 /********************************************************************************************************/
 
 /*setting up arrays*/
-/******************************************************/
+/****************************************************************/
 %do i=1 %to %_countw_(sentence=&archive_list);
     array win&i{*} %_format_list_(&&win_&i, before=_);
 %end;
 array f_win{*} %_format_list_(&archive_list, before=f_); 
 array a_win{*} %_format_list_(&archive_list, before=a_);
 array e_win{*} %_format_list_(&archive_list, before=e_);
-array p_e{*}   %_format_list_(&archive_list, before=p_e_);
-array n_e{*}   %_format_list_(&archive_list, before=n_e_);
-array n_p_e{*} %_format_list_(&archive_list, before=n_p_e_); 
-/*******************************************************/
+array p_e_win{*} %_format_list_(&archive_list, before=p_e_);
+array n_e_win{*} %_format_list_(&archive_list, before=n_e_);
+array n_p_e_win{*} %_format_list_(&archive_list, before=n_p_e_); 
+/****************************************************************/
 
 /*loading hash objects*/
 /*****************************************************************************************/
@@ -277,19 +277,22 @@ if _n_= 1 then do;
 	/*********************************************************************************/
 
 	/*creating actuals-forecast-error hash*/
-	/**********************************************************************************/
+	/*********************************************************************/
 	declare hash h();
 	h.definekey(%_comma_sep_(&agg_lvl, quoted=1));
-	h.definedata(%_comma_sep_(%_format_list_(&archive_list, before=a_) 
+	h.definedata(%_comma_sep_(&agg_lvl 
+                              %_format_list_(&archive_list, before=a_) 
 							  %_format_list_(&archive_list, before=f_) 
 							  %_format_list_(&archive_list, before=e_)
                               %_format_list_(&archive_list, before=p_e_) 
 							  %_format_list_(&archive_list, before=n_e_) 
-							  %_format_list_(&archive_list, before=n_p_e_) , quoted=1)
-							  );
+							  %_format_list_(&archive_list, before=n_p_e_) 
+                              m_e std_e m_p_e std_p_e , quoted=1
+                              )
+			     );
 	h.definedone();
     declare hiter h_iter('h');
-	/**********************************************************************************/
+	/*********************************************************************/
 
 end;
 /*****************************************************************************************/
@@ -336,33 +339,86 @@ if last then do;
       %end;
       /**********************************************/
 
-      /*computing the rest of stat*/
-      /*********************************************************/
-      %do i = 1 %to %_countw_(sentence=&archive_list);
-          p_e{&i}=e_win{&i}/f_win{&i};
-          n_e{&i}=(e_win{&i}-mean(of e_win{*}))/std(of e_win{*});
-          n_p_e{&i}=(p_e{&i}-mean(of p_e{*}))/std(of p_e{*});
-      %end;
-      /*********************************************************/
+	  /*outputing  records with not enough data*/
+	  /*removing those records from the hash will be taken care later*/
+	  /*we can't remove them now because of iterated component*/
+	  /***************************************************************/
+	  if max(of e_win{*})=. then do;
+         output except.exceptions;
+		 goto skip;
+	  end;
+      /***************************************************************/
 
-      rc = h.replace();
-      rc=h_iter.next();
+      /*computing the rest of stat*/
+      /************************************************************************/
+      %do i = 1 %to %_countw_(sentence=&archive_list);
+
+		  /*mean of error*/
+		  /***********************/
+		  m_e = mean(of e_win{*});
+		  /***********************/
+
+		  /*standard deviation of error*/
+		  /******************************/
+		  std_e = std(of e_win{*});
+		  /******************************/
+
+		  /*n_e*/
+		  /********************************************************/
+          if std_e > 0 then n_e_win{&i}=( e_win{&i} - m_e ) / std_e;
+		  else n_e_win{&i}=e_win{&i} - m_e;
+          /********************************************************/
+
+	      /*p_e*/
+	      /*******************************************************/
+	      if a_win{&i}=0 and f_win{&i}=0 then p_e_win{&i}=0;
+		  else if a_win{&i} > 0 and f_win{&i}=0 then p_e_win{&i}=1;
+          else p_e_win{&i} = e_win{&i} / f_win{&i};
+		  /*******************************************************/
+
+		  /*mean of p_e*/
+		  /***************************/
+		  m_p_e = mean(of p_e_win{*});
+		  /***************************/
+
+		  /*standard deviation of p_e*/
+		  /****************************/
+		  std_p_e = std(of p_e_win{*});
+		  /****************************/
+
+		  /*n_p_e*/
+		  /******************************************************************/
+		  if std_p_e > 0 then n_p_e_win{&i}=( p_e_win{&i} - m_p_e ) / std_p_e;
+		  else n_p_e_win{&i}=p_e_win{&i} - m_p_e;
+          /******************************************************************/
+
+	  %end;
+      /************************************************************************/
+
+	  rc = h.replace();
+	  skip:;
+      rc = h_iter.next();
 
 	end;
-   
-	h.output(dataset: "work.test_err");
+    
+	if max(of e_win{*})^= . then do;
+	   h.output(dataset:"work.test_err");
+	end;
 
 end;
-
 
 run;
 /**********************************************************************************************/
 
-
+/*clearing the libname*/
+/*********************************************/
+%do i=1 %to %_countw_(sentence=&archive_list);
+    libname _%scan(&archive_list,&i) clear ;
+%end;
+/*********************************************/
 
 
 proc printto;
 run;
-%return; 
 
 %mend r_collect;
